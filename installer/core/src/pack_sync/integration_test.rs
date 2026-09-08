@@ -563,3 +563,45 @@ fn lfxxn_second_run_is_a_no_op() {
         "no backups expected on a no-op run; got: {files:#?}"
     );
 }
+
+/// The FIR set a run covers is reported on the summary. The post-install vATIS
+/// step scopes itself to this, so it must follow the selected packages exactly
+/// — and `LFFM` must never appear, being an area rather than a FIR (it has no
+/// vATIS profile).
+#[test]
+fn summary_reports_the_firs_the_packages_cover() {
+    use crate::fir::FirCode;
+
+    let (_gh_tmp, github_root) = build_fake_github_repo();
+
+    let lfbb_tmp = TempDir::new().unwrap();
+    write_file(lfbb_tmp.path(), "LFBB-Bordeaux-260301-0003.sct", "bordeaux sct\n");
+    write_file(lfbb_tmp.path(), "LFBB/ICAO/airports.txt", "bordeaux icao\n");
+
+    let lfrr_tmp = TempDir::new().unwrap();
+    write_file(lfrr_tmp.path(), "LFRR-Brest-260301-0003.sct", "brest sct\n");
+    write_file(lfrr_tmp.path(), "LFRR/ICAO/airports.txt", "brest icao\n");
+
+    // Selected alongside the two FIRs; contributes an area, never a FIR.
+    let (_lffm_tmp, lffm_root) = build_fake_lffm_package();
+
+    let install_tmp = TempDir::new().unwrap();
+    let install_root = install_tmp.path();
+
+    let gng_roots = vec![
+        lfbb_tmp.path().to_path_buf(),
+        lfrr_tmp.path().to_path_buf(),
+        lffm_root,
+    ];
+    let plan = plan(PlanInputs {
+        github_root: Some(&github_root),
+        gng_roots: &gng_roots,
+        install_root,
+        github_short_sha: Some("abcdef1".into()),
+        area_source: AreaSource::Packages,
+    })
+    .unwrap();
+    let summary = apply(install_root, &plan).unwrap();
+
+    assert_eq!(summary.firs, vec![FirCode::LFBB, FirCode::LFRR]);
+}

@@ -90,3 +90,24 @@ pub async fn check_updates(app: AppHandle) -> Result<CheckUpdatesReport, String>
 pub async fn check_installer_update(app: AppHandle) -> Result<InstallerUpdateReport, String> {
     crate::update_check::check_installer_update(&app).await.map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn vatis_status(firs: Vec<controller_pack_core::fir::FirCode>) -> Result<crate::vatis::VatisStatus, String> {
+    crate::vatis::status(&firs).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn vatis_install_profiles(
+    firs: Vec<controller_pack_core::fir::FirCode>,
+) -> Result<controller_pack_core::vatis::VatisSummary, String> {
+    crate::vatis::install_profiles(&firs).await.map_err(|e| e.to_string())
+}
+
+/// Download the official vATIS installer and hand it to the OS. Returns the
+/// path it was written to so the modal can name it if the launch is ignored.
+#[tauri::command]
+pub async fn vatis_download_client() -> Result<String, String> {
+    let path = crate::vatis::download_client().await.map_err(|e| e.to_string())?;
+    crate::vatis::launch_client(&path).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}

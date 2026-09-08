@@ -56,6 +56,10 @@ pub struct SyncPlan {
     pub detected_airac: Option<String>,
     pub previous_airac: Option<String>,
     pub github_short_sha: Option<String>,
+    /// The FIRs this run covers, as decided by [`AreaSource`]. Kept on the plan
+    /// so callers do not have to re-derive "which FIRs were installed" from the
+    /// install root. `LFFM` is deliberately absent: it is an area, not a FIR.
+    pub installed_firs: BTreeSet<FirCode>,
     /// Real, user-facing warnings (surfaced in the sync summary).
     pub warnings: Vec<String>,
     /// Diagnostic notes for things we skipped on purpose (e.g. non-FIR sector
@@ -70,6 +74,9 @@ pub struct SyncSummary {
     pub files_written: usize,
     pub files_skipped: usize,
     pub warnings: Vec<String>,
+    /// The FIRs this run covered. Consumed by the post-install vATIS step to
+    /// scope itself to the packages the user actually selected.
+    pub firs: Vec<FirCode>,
 }
 
 // The military/legacy Tier-2 "secret" area folder. It lives on GitHub but is
@@ -199,6 +206,7 @@ pub fn plan(inputs: PlanInputs<'_>) -> anyhow::Result<SyncPlan> {
         AreaSource::Packages => detect_installed_codes(inputs.gng_roots),
         AreaSource::InstalledOnly => detect_installed_areas_on_disk(inputs.install_root),
     };
+    plan.installed_firs = installed_firs.clone();
 
     // 0) A full install never deletes top-level FIR folders. The selected
     //    packages only *scope* which folders get (re)written below — they do not
@@ -568,6 +576,7 @@ pub fn summarize(plan: &SyncPlan, written: usize, skipped: usize) -> SyncSummary
         files_written: written,
         files_skipped: skipped,
         warnings: plan.warnings.clone(),
+        firs: plan.installed_firs.iter().copied().collect(),
     }
 }
 

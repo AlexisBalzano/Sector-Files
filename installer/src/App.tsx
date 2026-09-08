@@ -3,11 +3,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Toaster, toast } from "sonner";
 import {
   AlertCircle,
+  CheckCircle2,
   Download,
   FilePlus2,
   FolderOpen,
   Loader2,
   Package,
+  RadioTower,
   RefreshCw,
   Save,
   X,
@@ -17,7 +19,11 @@ import {
   onEvent,
   type CheckUpdatesReport,
   type Profile,
+  type FirCode,
+  type ProfileState,
   type SyncSummary,
+  type VatisStatus,
+  type VatisSummary,
 } from "@/lib/tauri";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,6 +51,10 @@ export default function App() {
   const [packages, setPackages] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // The step keeps its own copy of the run's FIR scope: when no client is
+  // installed the status carries no per-FIR entries, so a re-check would
+  // otherwise have nothing to ask about.
+  const [vatis, setVatis] = useState<{ status: VatisStatus; firs: FirCode[] } | null>(null);
 
   useEffect(() => {
     api.getProfile().then(async (p) => {
@@ -126,6 +136,17 @@ export default function App() {
       });
       setProfile(await api.getProfile());
       api.checkUpdates().then(setUpdateStatus).catch(() => {});
+
+      // The vATIS step rides on a successful install and covers only the FIRs
+      // this run touched. It stays silent unless there is something to act on,
+      // and can never turn a good install into a bad one — a failed probe is a
+      // toast, not a modal, and not an install failure.
+      try {
+        const status = await api.vatisStatus(summary.firs);
+        if (status.needs_attention) setVatis({ status, firs: summary.firs });
+      } catch (e) {
+        toast.warning("Could not check vATIS", { description: String(e) });
+      }
     } catch (e) {
       toast.error("Sync failed", { id: "sync", description: String(e) });
     } finally {
@@ -213,6 +234,10 @@ export default function App() {
           onCancel={() => setConfirmOpen(false)}
           onConfirm={runSync}
         />
+      )}
+
+      {vatis && (
+        <VatisModal initial={vatis.status} firs={vatis.firs} onClose={() => setVatis(null)} />
       )}
 
       <Toaster theme="dark" position="bottom-right" richColors closeButton />
@@ -323,6 +348,299 @@ function ModalSection({ title, children }: { title: string; children: ReactNode 
       <h3 className="font-medium text-neutral-200">{title}</h3>
       {children}
     </div>
+  );
+}
+
+const PROFILE_STATE_LABEL: Record<ProfileState, string> = {
+  missing: "not installed yet",
+  superseded: "predates the 4 Sep 2026 rebuild",
+  current: "up to date",
+};
+
+/**
+ * The post-install vATIS step.
+ *
+ * Only ever mounted when there is something to act on, so it has two live
+ * states: no client installed, or profiles to install. Everything it does is
+ * isolated from the controller pack install that preceded it — errors land here
+ * and never change that result.
+ */
+function VatisModal({
+  initial,
+  firs,
+  onClose,
+}: {
+  initial: VatisStatus;
+  firs: FirCode[];
+  onClose: () => void;
+}) {
+  const [status, setStatus] = useState(initial);
+  const [busy, setBusy] = useState<"download" | "recheck" | "install" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<VatisSummary | null>(null);
+  const [downloadedTo, setDownloadedTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, busy]);
+
+  const run = async (kind: "download" | "recheck" | "install", fn: () => Promise<void>) => {
+    setBusy(kind);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const download = () =>
+    run("download", async () => setDownloadedTo(await api.vatisDownloadClient()));
+  const recheck = () => run("recheck", async () => setStatus(await api.vatisStatus(firs)));
+  const install = () =>
+    run("install", async () => setResult(await api.vatisInstallProfiles(firs)));
+
+  const pending = status.entries.filter((e) => e.state !== "current");
+  const isMac = status.platform === "macos";
+  // A re-check can resolve everything (the client turned up and its profiles
+  // were already current). Say so rather than showing an empty list.
+  const allSet = !result && status.client_installed && pending.length === 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={() => !busy && onClose()}
+    >
+      <div
+        className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-950 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 border-b border-neutral-800 px-5 py-4">
+          <RadioTower className="h-5 w-5 text-brand" />
+          <h2 className="text-base font-semibold">vATIS</h2>
+        </div>
+
+        <div className="space-y-4 px-5 py-4 text-sm text-neutral-300">
+          {result ? (
+            <ResultView result={result} backupDir={status.backup_dir} />
+          ) : !status.client_installed ? (
+            <ClientMissingView isMac={isMac} downloadedTo={downloadedTo} />
+          ) : allSet ? (
+            <p className="flex items-start gap-2">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+              <span>
+                vATIS is installed and its French vACC profiles are up to date. Nothing to do.
+              </span>
+            </p>
+          ) : (
+            <ProfilesView pending={pending} profilesDir={status.profiles_dir} />
+          )}
+
+          {error && (
+            <p className="flex items-start gap-2 rounded-md border border-red-900/50 bg-red-950/40 px-3 py-2 text-xs text-red-200">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span className="break-words">{error}</span>
+            </p>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-neutral-800 px-5 py-4">
+          {result || allSet ? (
+            <Button onClick={onClose}>Done</Button>
+          ) : !status.client_installed ? (
+            <>
+              <Button variant="outline" onClick={onClose} disabled={!!busy}>
+                Skip
+              </Button>
+              <Button variant="outline" onClick={recheck} disabled={!!busy}>
+                {busy === "recheck" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                Check again
+              </Button>
+              <Button onClick={download} disabled={!!busy}>
+                {busy === "download" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                Download vATIS
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" onClick={onClose} disabled={!!busy}>
+                Not now
+              </Button>
+              <Button onClick={install} disabled={!!busy || pending.length === 0}>
+                {busy === "install" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                Install profiles
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClientMissingView({
+  isMac,
+  downloadedTo,
+}: {
+  isMac: boolean;
+  downloadedTo: string | null;
+}) {
+  return (
+    <>
+      <p>
+        vATIS doesn&apos;t appear to be installed. It&apos;s the client that broadcasts ATIS on
+        VATSIM, and it is required for controlling with the French vACC.
+      </p>
+      {downloadedTo ? (
+        <ModalSection title={isMac ? "Finish in Finder" : "Finish the install"}>
+          <p className="text-neutral-400">
+            {isMac ? (
+              <>
+                The disk image is open. <strong>Drag vATIS to your Applications folder</strong> —
+                it refuses to run from the mounted image — then come back and choose{" "}
+                <strong>Check again</strong>.
+              </>
+            ) : (
+              <>
+                The installer has been launched. Once it finishes, choose{" "}
+                <strong>Check again</strong>.
+              </>
+            )}
+          </p>
+          <p className="mt-2 break-all font-mono text-xs text-neutral-500">{downloadedTo}</p>
+        </ModalSection>
+      ) : (
+        <ModalSection title="What happens">
+          <p className="text-neutral-400">
+            The official installer is downloaded from vatis.app and {isMac ? "opened" : "launched"}.
+            {isMac
+              ? " You'll drag vATIS to your Applications folder yourself, then choose Check again."
+              : " Once it finishes, choose Check again."}
+          </p>
+        </ModalSection>
+      )}
+    </>
+  );
+}
+
+function ProfilesView({
+  pending,
+  profilesDir,
+}: {
+  pending: { fir: FirCode; state: ProfileState }[];
+  profilesDir: string | null;
+}) {
+  const anySuperseded = pending.some((e) => e.state === "superseded");
+  return (
+    <>
+      <p>
+        The French vACC vATIS profiles for the FIRs you just installed can be set up now.
+      </p>
+
+      <ul className="space-y-1.5">
+        {pending.map((e) => (
+          <li
+            key={e.fir}
+            className="flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2"
+          >
+            <RadioTower className="h-4 w-4 shrink-0 text-neutral-400" />
+            <span className="font-medium">{e.fir}</span>
+            <span className="ml-auto text-xs text-neutral-500">
+              {PROFILE_STATE_LABEL[e.state]}
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {anySuperseded && (
+        <ModalSection title="Why these are being replaced">
+          <p className="text-neutral-400">
+            We reissued the profiles in a new format, which vATIS cannot pick up on its own, so
+            they need to be reinstalled. Your old files are{" "}
+            <strong>moved to a backup folder</strong>, not deleted.
+          </p>
+        </ModalSection>
+      )}
+
+      <ModalSection title="Close vATIS first">
+        <p className="text-neutral-400">
+          If vATIS is running, close it before continuing — it reads profiles at startup and can
+          write an open one back over the new copy.
+        </p>
+        {profilesDir && (
+          <p className="mt-2 break-all font-mono text-xs text-neutral-500">{profilesDir}</p>
+        )}
+      </ModalSection>
+    </>
+  );
+}
+
+function ResultView({
+  result,
+  backupDir,
+}: {
+  result: VatisSummary;
+  backupDir: string | null;
+}) {
+  return (
+    <>
+      <p className="flex items-start gap-2">
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+        <span>
+          {result.profiles_written} profile{result.profiles_written === 1 ? "" : "s"} installed
+          {result.files_backed_up > 0 && (
+            <>
+              , {result.files_backed_up} older file
+              {result.files_backed_up === 1 ? "" : "s"} moved to backup
+            </>
+          )}
+          .
+        </span>
+      </p>
+
+      {result.files_backed_up > 0 && backupDir && (
+        <ModalSection title="Your previous profiles">
+          <p className="text-neutral-400">
+            Nothing was deleted. The files that were replaced are here if you need them back:
+          </p>
+          <p className="mt-2 break-all font-mono text-xs text-neutral-500">{backupDir}</p>
+        </ModalSection>
+      )}
+
+      {result.warnings.length > 0 && (
+        <ModalSection title={`${result.warnings.length} warning(s)`}>
+          <ul className="list-disc space-y-1 pl-5 text-xs text-neutral-400">
+            {result.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </ModalSection>
+      )}
+
+      <p className="text-xs text-neutral-500">
+        Restart vATIS to pick them up. From now on it keeps them up to date itself.
+      </p>
+    </>
   );
 }
 

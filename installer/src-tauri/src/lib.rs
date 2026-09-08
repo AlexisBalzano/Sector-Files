@@ -4,6 +4,7 @@ pub mod local_packages;
 pub mod sync_orchestrator;
 pub mod update_check;
 pub mod commands;
+pub mod vatis;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -48,6 +49,9 @@ pub fn run() {
             commands::import_plugin_lines,
             commands::check_updates,
             commands::check_installer_update,
+            commands::vatis_status,
+            commands::vatis_install_profiles,
+            commands::vatis_download_client,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

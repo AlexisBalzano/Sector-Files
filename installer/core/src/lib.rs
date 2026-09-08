@@ -4,5 +4,6 @@ pub mod pack_dir;
 pub mod pack_sync;
 pub mod profile_configurator;
 pub mod profile_types;
+pub mod vatis;
 
 pub use fir::{AreaCode, FirCode};

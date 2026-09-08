@@ -41,6 +41,8 @@ export interface SyncSummary {
   files_written: number;
   files_skipped: number;
   warnings: string[];
+  /** FIRs this run covered. Scopes the post-install vATIS step. Never `LFFM`. */
+  firs: FirCode[];
 }
 
 export type CheckStatus =
@@ -59,6 +61,32 @@ export interface InstallerUpdateReport {
   current_version: string;
 }
 
+/** Where one FIR's vATIS profile stands on this machine. */
+export type ProfileState = "missing" | "superseded" | "current";
+
+export interface ProfileEntry {
+  fir: FirCode;
+  state: ProfileState;
+}
+
+export interface VatisStatus {
+  client_installed: boolean;
+  client_path: string | null;
+  platform: "windows" | "macos";
+  profiles_dir: string | null;
+  backup_dir: string | null;
+  entries: ProfileEntry[];
+  /** Whether there is anything for the user to act on. Drives suppression. */
+  needs_attention: boolean;
+  warnings: string[];
+}
+
+export interface VatisSummary {
+  profiles_written: number;
+  files_backed_up: number;
+  warnings: string[];
+}
+
 export const api = {
   getProfile: () => invoke<Profile>("get_profile"),
   updateProfile: (patch: ProfilePatch) => invoke<Profile>("update_profile", { patch }),
@@ -75,6 +103,10 @@ export const api = {
     invoke<number>("import_plugin_lines", { installRoot, examplePrf }),
   checkUpdates: () => invoke<CheckUpdatesReport>("check_updates"),
   checkInstallerUpdate: () => invoke<InstallerUpdateReport>("check_installer_update"),
+  vatisStatus: (firs: FirCode[]) => invoke<VatisStatus>("vatis_status", { firs }),
+  vatisInstallProfiles: (firs: FirCode[]) =>
+    invoke<VatisSummary>("vatis_install_profiles", { firs }),
+  vatisDownloadClient: () => invoke<string>("vatis_download_client"),
 };
 
 export async function onEvent<T>(
